@@ -133,7 +133,7 @@ class Game(AbstractGame):
     """
 
     def __init__(self, seed=None):
-        self.env = Gomoku()
+        self.env = Jyungo()
 
     def step(self, action):
         """
@@ -216,10 +216,11 @@ class Game(AbstractGame):
         return self.env.action_to_human_input(action)
 
 
-class Gomoku:
+class Jyungo:
     def __init__(self):
         self.board_size = 7
         self.board = numpy.zeros((self.board_size, self.board_size), dtype="int32")
+        self.prev_board = numpy.zeros((self.board_size, self.board_size), dtype="int32")
         self.player = 1
         self.board_markers = [
             chr(x) for x in range(ord("A"), ord("A") + self.board_size)
@@ -233,14 +234,81 @@ class Gomoku:
         self.player = 1
         return self.get_observation()
 
-    def step(self, action):
+    def step_board(self, board, action):
         x = math.floor(action / self.board_size)
         y = action % self.board_size
-        self.board[x][y] = self.player
+        board[x][y] = self.player
+        # 死活チェック
+        check_board = numpy.copy(self.board)
+        # 相手色チェック
+        def other(vx, vy, color):
+            if color == 0:
+                return 1
+            if color == self.player * -1:
+                check_board[vx][vy] *= 2
+                return self.crossLoop(check_board, vx, vy, other)
+            return 0
+        # player色チェック
+        def same(vx, vy, color):
+            if color == 0:
+                return 1
+            if color == self.player:
+                check_board[vx][vy] *= 2
+                return self.crossLoop(check_board, vx, vy, same)
+            return 0
+        directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        for d in directions:
+            if (x+d[0] not in range(self.board_size)) or (y+d[1] not in range(self.board_size)):
+                continue
+            kuten = self.crossLoop(check_board, x+d[0], y+d[1], other)
+            if kuten == 0:
+                self.killStone(board, x+d[0], y+d[1])
+                self.killStone(check_board, x+d[0], y+d[1])
+        kuten = self.crossLoop(check_board, x, y, same)
+        if kuten == 0:
+            self.killStone(board, x, y)
+        # self.checkShikatu(check_board, x, y)
+    
+    def crossLoop(self, board, x, y, func):
+        directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        ret = 0
+        for d in directions:
+            vx = x + d[0]
+            vy = y + d[1]
+            if (vx not in range(self.board_size)) or (vy not in range(self.board_size)):
+                continue
+            color = board[vx][vy]
+            ret += func(vx, vy, color)
+        return ret
+
+    def checkShikatu(self, board, x, y):
+        tcolor = board[x][y]
+        if tcolor == 0 or abs(tcolor) != 1:
+            return 0
+        board[x][y] *= 2
+        def func(vx, vy, color):
+            if color == 0:
+                return 1
+            if color == tcolor:
+                return self.checkShikatu(board, vx, vy)
+            return 0
+        return self.crossLoop(board, x, y, func)   
+    
+    def killStone(self, board, x, y):
+        tcolor = board[x][y]
+        board[x][y] = 0
+        directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        def func(vx, vy, color):
+            if color != 0 and color == tcolor:
+                self.killStone(board, vx, vy)
+            return 0
+        self.crossLoop(board, x, y, func)      
+
+    def step(self, action):
+        self.step_board(self.board, action)        
+        self.prev_board = numpy.copy(self.board)
 
         done, reward = self.is_finished()
-
-        # reward = 1 if done else 0
 
         self.player *= -1
 
@@ -256,8 +324,12 @@ class Gomoku:
         legal = []
         for i in range(self.board_size):
             for j in range(self.board_size):
-                if self.board[i][j] == 0:
-                    legal.append(i * self.board_size + j)
+                action = i * self.board_size + j
+                buff_board = numpy.copy(self.board)
+                self.step_board(buff_board, action)
+                # コウチェック
+                if self.board[i][j] == 0 and not numpy.array_equal(self.board, buff_board):
+                    legal.append(action)
         return legal
 
     def is_finished(self):
