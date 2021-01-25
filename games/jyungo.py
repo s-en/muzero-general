@@ -19,7 +19,7 @@ class MuZeroConfig:
 
         ### Game
         self.observation_shape = (3, 7, 7)  # Dimensions of the game observation, must be 3 (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
-        self.action_space = list(range(7 * 7))  # Fixed list of all possible actions. You should only edit the length
+        self.action_space = list(range(-1, 7 * 7))  # Fixed list of all possible actions. You should only edit the length
         self.players = list(range(2))  # List of players. You should only edit the length
         self.stacked_observations = 0  # Number of previous observations and previous actions to add to the current observation
 
@@ -222,6 +222,7 @@ class Jyungo:
         self.board = numpy.zeros((self.board_size, self.board_size), dtype="int32")
         self.prev_board = numpy.zeros((self.board_size, self.board_size), dtype="int32")
         self.player = 1
+        self.passed = False
         self.board_markers = [
             chr(x) for x in range(ord("A"), ord("A") + self.board_size)
         ]
@@ -239,7 +240,7 @@ class Jyungo:
         y = action % self.board_size
         board[x][y] = self.player
         # 死活チェック
-        check_board = numpy.copy(self.board)
+        check_board = numpy.copy(board)
         # 相手色チェック
         def other(vx, vy, color):
             if color == 0:
@@ -256,18 +257,18 @@ class Jyungo:
                 check_board[vx][vy] *= 2
                 return self.crossLoop(check_board, vx, vy, same)
             return 0
-        directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
-        for d in directions:
-            if (x+d[0] not in range(self.board_size)) or (y+d[1] not in range(self.board_size)):
-                continue
-            kuten = self.crossLoop(check_board, x+d[0], y+d[1], other)
+        def checkOther(vx, vy, color):
+            if check_board[vx][vy] == self.player:
+                return 0
+            kuten = self.crossLoop(check_board, vx, vy, other)
             if kuten == 0:
-                self.killStone(board, x+d[0], y+d[1])
-                self.killStone(check_board, x+d[0], y+d[1])
+                self.killStone(board, vx, vy)
+                self.killStone(check_board, vx, vy)
+            return 0
+        self.crossLoop(check_board, x, y, checkOther)
         kuten = self.crossLoop(check_board, x, y, same)
         if kuten == 0:
             self.killStone(board, x, y)
-        # self.checkShikatu(check_board, x, y)
     
     def crossLoop(self, board, x, y, func):
         directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
@@ -280,24 +281,10 @@ class Jyungo:
             color = board[vx][vy]
             ret += func(vx, vy, color)
         return ret
-
-    def checkShikatu(self, board, x, y):
-        tcolor = board[x][y]
-        if tcolor == 0 or abs(tcolor) != 1:
-            return 0
-        board[x][y] *= 2
-        def func(vx, vy, color):
-            if color == 0:
-                return 1
-            if color == tcolor:
-                return self.checkShikatu(board, vx, vy)
-            return 0
-        return self.crossLoop(board, x, y, func)   
     
     def killStone(self, board, x, y):
         tcolor = board[x][y]
         board[x][y] = 0
-        directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
         def func(vx, vy, color):
             if color != 0 and color == tcolor:
                 self.killStone(board, vx, vy)
@@ -305,14 +292,19 @@ class Jyungo:
         self.crossLoop(board, x, y, func)      
 
     def step(self, action):
-        self.step_board(self.board, action)        
         self.prev_board = numpy.copy(self.board)
-
-        done, reward = self.is_finished()
-
+        if action >= 0:
+            self.step_board(self.board, action)
+            self.passed = False
+        else:
+            if self.passed == True:
+                # 2連続パスでゲーム終了
+                return self.get_observation(), self.get_reward(), True
+            self.passed = True
+        
         self.player *= -1
 
-        return self.get_observation(), reward, done
+        return self.get_observation(), 0.0, False
 
     def get_observation(self):
         board_player1 = numpy.where(self.board == 1, 1.0, 0.0)
@@ -328,39 +320,20 @@ class Jyungo:
                 buff_board = numpy.copy(self.board)
                 self.step_board(buff_board, action)
                 # コウチェック
-                if self.board[i][j] == 0 and not numpy.array_equal(self.board, buff_board):
+                if self.board[i][j] == 0 and not numpy.array_equal(self.prev_board, buff_board):
                     legal.append(action)
         return legal
-
-    def is_finished(self):
-        has_legal_actions = False
-        directions = ((1, -1), (1, 0), (1, 1), (0, 1))
+    
+    def get_reward(self):
+        r = 0.0
         for i in range(self.board_size):
             for j in range(self.board_size):
-                # if no stone is on the position, don't need to consider this position
-                if self.board[i][j] == 0:
-                    has_legal_actions = True
-                    continue
-                # value-value at a coord, i-row, j-col
-                player = self.board[i][j]
-                # check if there exist 5 in a line
-                for d in directions:
-                    x, y = i, j
-                    count = 0
-                    for _ in range(5):
-                        if (x not in range(self.board_size)) or (
-                            y not in range(self.board_size)
-                        ):
-                            break
-                        if self.board[x][y] != player:
-                            break
-                        x += d[0]
-                        y += d[1]
-                        count += 1
-                        # if 5 in a line, store positions of all stones, return value
-                        if count == 5:
-                            return True, 1.0
-        return not has_legal_actions, 0.0
+                color = self.board[i][j]
+                if color == self.player:
+                    r += 1.0
+                if color == self.player * -1:
+                    r -= 1.0
+        return r / self.board_size / self.board_size
 
     def render(self):
         marker = "  "
@@ -381,6 +354,9 @@ class Jyungo:
 
     def human_input_to_action(self):
         human_input = input("Enter an action: ")
+        if len(human_input) == 1 and human_input[0] == 'P':
+            # pass
+            return True, -1
         if (
             len(human_input) == 2
             and human_input[0] in self.board_markers
@@ -388,11 +364,15 @@ class Jyungo:
         ):
             x = ord(human_input[0]) - 65
             y = ord(human_input[1]) - 65
-            if self.board[x][y] == 0:
-                return True, x * self.board_size + y
+            action = x * self.board_size + y
+            if action in self.legal_actions():
+                return True, action
         return False, -1
 
     def action_to_human_input(self, action):
+        if action < 0:
+            # pass
+            return -1
         x = math.floor(action / self.board_size)
         y = action % self.board_size
         x = chr(x + 65)
